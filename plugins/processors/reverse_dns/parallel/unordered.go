@@ -7,11 +7,10 @@ import (
 )
 
 type Unordered struct {
-	wg       sync.WaitGroup
-	acc      telegraf.Accumulator
-	fn       func(telegraf.Metric) []telegraf.Metric
-	inQueue  chan telegraf.Metric
-	outQueue chan telegraf.Metric
+	wg      sync.WaitGroup
+	acc     telegraf.Accumulator
+	fn      func(telegraf.Metric) []telegraf.Metric
+	inQueue chan telegraf.Metric
 }
 
 func NewUnordered(
@@ -20,10 +19,9 @@ func NewUnordered(
 	workerCount int,
 ) *Unordered {
 	p := &Unordered{
-		acc:      acc,
-		inQueue:  make(chan telegraf.Metric, workerCount),
-		outQueue: make(chan telegraf.Metric, workerCount),
-		fn:       fn,
+		acc:     acc,
+		inQueue: make(chan telegraf.Metric, workerCount),
+		fn:      fn,
 	}
 
 	// start workers
@@ -33,12 +31,6 @@ func NewUnordered(
 		p.wg.Done()
 	}()
 
-	// start one to read the output
-	p.wg.Add(1)
-	go func() {
-		p.readQueue()
-		p.wg.Done()
-	}()
 	return p
 }
 
@@ -49,22 +41,13 @@ func (p *Unordered) startWorkers(count int) {
 		go func() {
 			for metric := range p.inQueue {
 				for _, m := range p.fn(metric) {
-					p.outQueue <- m
+					p.acc.AddMetric(m)
 				}
 			}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
-	close(p.outQueue)
-}
-
-func (p *Unordered) readQueue() {
-	for m := range p.outQueue {
-		if m != nil {
-			p.acc.AddMetric(m)
-		}
-	}
 }
 
 func (p *Unordered) Stop() {

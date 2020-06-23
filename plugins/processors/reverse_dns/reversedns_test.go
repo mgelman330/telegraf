@@ -30,7 +30,6 @@ func TestSimpleReverseLookup(t *testing.T) {
 		},
 	}
 	acc := &testutil.Accumulator{}
-	dns.Init()
 	dns.Start(acc)
 	dns.Add(m, acc)
 	dns.Stop()

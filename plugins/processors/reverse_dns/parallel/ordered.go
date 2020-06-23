@@ -6,9 +6,6 @@ import (
 	"github.com/influxdata/telegraf"
 )
 
-// set number of workers
-//
-
 type Ordered struct {
 	wg sync.WaitGroup
 	fn func(telegraf.Metric) []telegraf.Metric

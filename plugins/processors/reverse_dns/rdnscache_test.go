@@ -1,6 +1,8 @@
 package reversedns
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -9,15 +11,16 @@ import (
 )
 
 func TestSimpleReverseDNSLookup(t *testing.T) {
-	d := NewReverseDNSCache(1*time.Second, 1*time.Second, -1)
-	answer := d.Lookup("8.8.8.8")
-	require.Equal(t, []string{"dns.google."}, answer)
-	d.waitForWorkers()
+	d := NewReverseDNSCache(60*time.Second, 1*time.Second, -1)
+	d.Resolver = &localResolver{}
+	answer := d.Lookup("127.0.0.1")
+	require.Equal(t, []string{"localhost"}, answer)
+	d.blockAllWorkers()
 
 	// do another request with no workers available.
 	// it should read from cache instantly.
-	answer = d.Lookup("8.8.8.8")
-	require.Equal(t, []string{"dns.google."}, answer)
+	answer = d.Lookup("127.0.0.1")
+	require.Equal(t, []string{"localhost"}, answer)
 
 	require.Len(t, d.cache, 1)
 	require.Len(t, d.expireList, 1)
@@ -35,16 +38,17 @@ func TestSimpleReverseDNSLookup(t *testing.T) {
 
 func TestParallelReverseDNSLookup(t *testing.T) {
 	d := NewReverseDNSCache(1*time.Second, 1*time.Second, -1)
+	d.Resolver = &localResolver{}
 	var answer1 []string
 	var answer2 []string
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
 	go func() {
-		answer1 = d.Lookup("8.8.8.8")
+		answer1 = d.Lookup("127.0.0.1")
 		wg.Done()
 	}()
 	go func() {
-		answer2 = d.Lookup("8.8.8.8")
+		answer2 = d.Lookup("127.0.0.1")
 		wg.Done()
 	}()
 
@@ -53,8 +57,8 @@ func TestParallelReverseDNSLookup(t *testing.T) {
 	t.Log(answer1)
 	t.Log(answer2)
 
-	require.Equal(t, []string{"dns.google."}, answer1)
-	require.Equal(t, []string{"dns.google."}, answer2)
+	require.Equal(t, []string{"localhost"}, answer1)
+	require.Equal(t, []string{"localhost"}, answer2)
 
 	require.Len(t, d.cache, 1)
 
@@ -66,6 +70,7 @@ func TestParallelReverseDNSLookup(t *testing.T) {
 
 func TestUnavailableDNSServerRespectsTimeout(t *testing.T) {
 	d := NewReverseDNSCache(0, 1, -1)
+	d.Resolver = &timeoutResolver{}
 
 	result := d.Lookup("192.153.33.3")
 
@@ -75,8 +80,8 @@ func TestUnavailableDNSServerRespectsTimeout(t *testing.T) {
 func TestCleanupHappens(t *testing.T) {
 	ttl := 100 * time.Millisecond
 	d := NewReverseDNSCache(ttl, 1*time.Second, -1)
-	_ = d.Lookup("8.8.8.8")
-	d.waitForWorkers()
+	d.Resolver = &localResolver{}
+	_ = d.Lookup("127.0.0.1")
 
 	require.Len(t, d.cache, 1)
 
@@ -93,8 +98,8 @@ func TestCleanupHappens(t *testing.T) {
 
 func TestCachePassthrough(t *testing.T) {
 	d := NewReverseDNSCache(0, 1*time.Second, -1)
-	_ = d.Lookup("8.8.8.8")
-	d.waitForWorkers()
+	d.Resolver = &localResolver{}
+	_ = d.Lookup("127.0.0.1")
 
 	require.Len(t, d.cache, 0)
 
@@ -104,12 +109,20 @@ func TestCachePassthrough(t *testing.T) {
 }
 
 func TestLookupTimeout(t *testing.T) {
-	// 1ns timeout
-	d := NewReverseDNSCache(1*time.Second, 1, -1)
-	d.Lookup("8.8.8.8")
-
-	for d.Stats().RequestsAbandoned != 1 {
-		time.Sleep(1 * time.Millisecond)
-	}
+	d := NewReverseDNSCache(10*time.Second, 10*time.Second, -1)
+	d.Resolver = &timeoutResolver{}
+	d.Lookup("127.0.0.1")
 	require.EqualValues(t, 1, d.Stats().RequestsAbandoned)
+}
+
+type timeoutResolver struct{}
+
+func (r *timeoutResolver) LookupAddr(ctx context.Context, addr string) (names []string, err error) {
+	return nil, errors.New("timeout")
+}
+
+type localResolver struct{}
+
+func (r *localResolver) LookupAddr(ctx context.Context, addr string) (names []string, err error) {
+	return []string{"localhost"}, nil
 }
