@@ -90,9 +90,9 @@ func (r *ReverseDNS) Start(acc telegraf.Accumulator) error {
 		r.MaxParallelLookups, // max parallel reverse-dns lookups
 	)
 	if r.Ordered {
-		r.parallel = parallel.NewOrdered(acc, r.asyncAdd, 10000, r.MaxParallelLookups+1)
+		r.parallel = parallel.NewOrdered(acc, r.asyncAdd, 10000, r.MaxParallelLookups)
 	} else {
-		r.parallel = parallel.NewUnordered(acc, r.asyncAdd, r.MaxParallelLookups+1)
+		r.parallel = parallel.NewUnordered(acc, r.asyncAdd, r.MaxParallelLookups)
 	}
 	return nil
 }
