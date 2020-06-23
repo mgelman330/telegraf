@@ -1,9 +1,7 @@
-package reversedns
+package reverse_dns
 
 import (
 	"time"
-
-	"github.com/influxdata/telegraf/selfstat"
 
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/config"

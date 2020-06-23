@@ -1,4 +1,4 @@
-package reversedns
+package reverse_dns
 
 import (
 	"testing"
