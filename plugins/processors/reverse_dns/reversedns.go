@@ -72,6 +72,7 @@ type ReverseDNS struct {
 	LookupTimeout      config.Duration `toml:"lookup_timeout"`
 	MaxParallelLookups int             `toml:"max_parallel_lookups"`
 	Ordered            bool            `toml:"ordered"`
+	Log                telegraf.Logger `toml:"-"`
 }
 
 func (r *ReverseDNS) SampleConfig() string {
@@ -112,7 +113,11 @@ func (r *ReverseDNS) asyncAdd(metric telegraf.Metric) []telegraf.Metric {
 		if len(lookup.Field) > 0 {
 			if ipField, ok := metric.GetField(lookup.Field); ok {
 				if ip, ok := ipField.(string); ok {
-					result := r.reverseDNSCache.Lookup(ip)
+					result, err := r.reverseDNSCache.Lookup(ip)
+					if err != nil {
+						r.Log.Errorf("lookup error: %v", err)
+						continue
+					}
 					if len(result) > 0 {
 						metric.AddField(lookup.Dest, result[0])
 					}
@@ -121,7 +126,11 @@ func (r *ReverseDNS) asyncAdd(metric telegraf.Metric) []telegraf.Metric {
 		}
 		if len(lookup.Tag) > 0 {
 			if ipTag, ok := metric.GetTag(lookup.Tag); ok {
-				result := r.reverseDNSCache.Lookup(ipTag)
+				result, err := r.reverseDNSCache.Lookup(ipTag)
+				if err != nil {
+					r.Log.Errorf("lookup error: %v", err)
+					continue
+				}
 				if len(result) > 0 {
 					metric.AddTag(lookup.Dest, result[0])
 				}

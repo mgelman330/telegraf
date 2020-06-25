@@ -2,7 +2,7 @@ package reverse_dns
 
 import (
 	"context"
-	"log"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -13,6 +13,11 @@ import (
 
 const defaultMaxWorkers = 10
 
+var (
+	ErrTimeout = errors.New("request timed out")
+)
+
+// AnyResolver is for the net.Resolver
 type AnyResolver interface {
 	LookupAddr(ctx context.Context, addr string) (names []string, err error)
 }
@@ -85,19 +90,24 @@ type dnslookup struct {
 	callbacks []callbackChannelType
 }
 
-type callbackChannelType chan []string
+type lookupResult struct {
+	domains []string
+	err     error
+}
+
+type callbackChannelType chan lookupResult
 
 // Lookup takes a string representing a parseable ipv4 or ipv6 IP, and blocks
 // until it has resolved to 0-n results, or until its lookup timeout has elapsed.
 // if the lookup timeout elapses, it returns an empty slice.
-func (d *ReverseDNSCache) Lookup(ip string) []string {
+func (d *ReverseDNSCache) Lookup(ip string) ([]string, error) {
 	if len(ip) == 0 {
-		return []string{}
+		return nil, nil
 	}
 	return d.lookup(ip)
 }
 
-func (d *ReverseDNSCache) lookup(ip string) []string {
+func (d *ReverseDNSCache) lookup(ip string) ([]string, error) {
 	// check if the value is cached
 	d.rwLock.RLock()
 	result, found := d.lockedGetFromCache(ip)
@@ -105,7 +115,7 @@ func (d *ReverseDNSCache) lookup(ip string) []string {
 		defer d.rwLock.RUnlock()
 		atomic.AddUint64(&d.stats.CacheHit, 1)
 		// cache is valid
-		return result.domains
+		return result.domains, nil
 	}
 	d.rwLock.RUnlock()
 
@@ -117,11 +127,10 @@ func (d *ReverseDNSCache) lookup(ip string) []string {
 	// timer is still necessary even if doLookup respects timeout due to worker
 	// pool starvation.
 	select {
-	case domains := <-lookupChan:
-		return domains
+	case result := <-lookupChan:
+		return result.domains, result.err
 	case <-timer.C:
-		log.Println("reverse dns lookup timed out")
-		return []string{}
+		return nil, ErrTimeout
 	}
 }
 
@@ -138,7 +147,7 @@ func (d *ReverseDNSCache) subscribeTo(ip string) callbackChannelType {
 		// has the request been answered since we last checked?
 		if result.completed {
 			// we can return the answer with the channel.
-			callback <- result.domains
+			callback <- lookupResult{domains: result.domains}
 			return callback
 		}
 		// there's a request but it hasn't been answered yet;
@@ -158,7 +167,7 @@ func (d *ReverseDNSCache) subscribeTo(ip string) callbackChannelType {
 	}
 
 	d.lockedSaveToCache(l)
-	go d.doLookup(*l)
+	go d.doLookup(l.ip)
 	return callback
 }
 
@@ -174,7 +183,7 @@ func (d *ReverseDNSCache) lockedGetFromCache(ip string) (lookup *dnslookup, foun
 }
 
 // lockedSaveToCache stores a lookup in the correct internal ip cache.
-// you MUST first do a read or write lock before calling it.
+// you MUST first do a write lock before calling it.
 func (d *ReverseDNSCache) lockedSaveToCache(lookup *dnslookup) {
 	if lookup.expiresAt.Before(time.Now()) {
 		return // don't cache.
@@ -196,24 +205,24 @@ func (d *ReverseDNSCache) startCleanupWorker(ctx context.Context) {
 	}()
 }
 
-func (d *ReverseDNSCache) doLookup(l dnslookup) {
+func (d *ReverseDNSCache) doLookup(ip string) {
 	ctx, cancel := context.WithTimeout(context.Background(), d.lookupTimeout)
 	defer cancel()
 	if err := d.sem.Acquire(ctx, 1); err != nil {
 		// lookup timeout
-		d.abandonLookup(l)
+		d.abandonLookup(ip, ErrTimeout)
 		return
 	}
 	defer d.sem.Release(1)
 
-	names, err := d.Resolver.LookupAddr(ctx, l.ip)
+	names, err := d.Resolver.LookupAddr(ctx, ip)
 	if err != nil {
-		d.abandonLookup(l)
+		d.abandonLookup(ip, err)
 		return
 	}
 
 	d.rwLock.Lock()
-	lookup, found := d.lockedGetFromCache(l.ip)
+	lookup, found := d.lockedGetFromCache(ip)
 	if !found {
 		d.rwLock.Unlock()
 		return
@@ -235,14 +244,14 @@ func (d *ReverseDNSCache) doLookup(l dnslookup) {
 
 	atomic.AddUint64(&d.stats.RequestsFilled, uint64(len(callbacks)))
 	for _, cb := range callbacks {
-		cb <- names
+		cb <- lookupResult{domains: names}
 		close(cb)
 	}
 }
 
-func (d *ReverseDNSCache) abandonLookup(l dnslookup) {
+func (d *ReverseDNSCache) abandonLookup(ip string, err error) {
 	d.rwLock.Lock()
-	lookup, found := d.lockedGetFromCache(l.ip)
+	lookup, found := d.lockedGetFromCache(ip)
 	if !found {
 		d.rwLock.Unlock()
 		return
@@ -254,6 +263,7 @@ func (d *ReverseDNSCache) abandonLookup(l dnslookup) {
 	// resolve the remaining callbacks to free the resources.
 	atomic.AddUint64(&d.stats.RequestsAbandoned, uint64(len(callbacks)))
 	for _, cb := range callbacks {
+		cb <- lookupResult{err: err}
 		close(cb)
 	}
 }
